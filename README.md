@@ -4,6 +4,8 @@
 
 rbcapp1 depends on 3 services: httpd, rabbitMQ and postgreSQL. If any goes down, the app is considered DOWN. This project monitors those services and stores their status in Elasticsearch.
 
+**Note:** I used Docker to set this up since I don't have a dedicated Linux server. All the scripts and playbooks are written for Linux (RHEL/CentOS) and will work the same way on an actual Linux machine with systemd.
+
 ## Structure
 
 ```
