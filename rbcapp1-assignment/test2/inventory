@@ -1,0 +1,25 @@
+# Ansible inventory for rbcapp1 monitoring
+# Each host runs one of the 3 dependent services
+
+[httpd_servers]
+host1 ansible_host=192.168.1.11 service_name=httpd service_package=httpd
+
+[rabbitmq_servers]
+host2 ansible_host=192.168.1.12 service_name=rabbitmq-server service_package=rabbitmq-server
+
+[postgresql_servers]
+host3 ansible_host=192.168.1.13 service_name=postgresql service_package=postgresql-server
+
+# all rbcapp1 dependency hosts
+[rbcapp1:children]
+httpd_servers
+rabbitmq_servers
+postgresql_servers
+
+[rbcapp1:vars]
+ansible_user=deploy
+ansible_become=true
+ansible_become_method=sudo
+alert_email=himanshujaiswal172000@gmail.com
+disk_threshold=80
+healthcheck_url=http://localhost:5000/healthcheck

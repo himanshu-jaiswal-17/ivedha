@@ -1,0 +1,139 @@
+---
+# Playbook for rbcapp1 monitoring
+# Run with: ansible-playbook assignment.yml -i inventory -e action=<action>
+# Supported actions: verify_install, check-disk, check-status
+
+# --- verify_install: make sure each service is installed and running ---
+- name: Verify and install services
+  hosts: rbcapp1
+  become: true
+  gather_facts: true
+  tasks:
+    - name: verify_install tasks
+      when: action == "verify_install"
+      block:
+        - name: Check if package is installed
+          ansible.builtin.yum:
+            list: "{{ service_package }}"
+          register: pkg_check
+
+        - name: Show install status
+          ansible.builtin.debug:
+            msg: >-
+              {{ service_package }} is
+              {{ 'INSTALLED' if pkg_check.results | selectattr('yumstate', 'equalto', 'installed') | list | length > 0
+                 else 'NOT INSTALLED' }}
+              on {{ inventory_hostname }}
+
+        - name: Install if missing
+          ansible.builtin.yum:
+            name: "{{ service_package }}"
+            state: present
+          when: pkg_check.results | selectattr('yumstate', 'equalto', 'installed') | list | length == 0
+          register: install_result
+
+        - name: Start and enable service
+          ansible.builtin.systemd:
+            name: "{{ service_name }}"
+            state: started
+            enabled: true
+          when: install_result is changed
+
+        - name: Get service status
+          ansible.builtin.systemd:
+            name: "{{ service_name }}"
+          register: svc_status
+
+        - name: Show final status
+          ansible.builtin.debug:
+            msg: "{{ service_name }} on {{ inventory_hostname }}: {{ svc_status.status.ActiveState }}"
+
+
+# --- check-disk: report any partition over 80% usage, email alert if found ---
+- name: Check disk space
+  hosts: rbcapp1
+  become: true
+  gather_facts: true
+  tasks:
+    - name: check-disk tasks
+      when: action == "check-disk"
+      block:
+        - name: Find partitions over threshold
+          ansible.builtin.shell: |
+            df -hP | awk 'NR>1 {gsub(/%/,"",$5); if ($5+0 > {{ disk_threshold }}) print $6" "$5"%"}'
+          register: disk_output
+          changed_when: false
+
+        - name: Warn about high usage
+          ansible.builtin.debug:
+            msg: "WARNING - {{ inventory_hostname }}: {{ disk_output.stdout_lines }}"
+          when: disk_output.stdout_lines | length > 0
+
+        - name: All clear
+          ansible.builtin.debug:
+            msg: "OK - {{ inventory_hostname }}: all partitions under {{ disk_threshold }}%"
+          when: disk_output.stdout_lines | length == 0
+
+        - name: Send alert email
+          community.general.mail:
+            host: localhost
+            port: 25
+            to: "{{ alert_email }}"
+            from: "ansible-monitor@{{ inventory_hostname }}"
+            subject: "DISK ALERT: {{ inventory_hostname }} over {{ disk_threshold }}%"
+            body: |
+              Host: {{ inventory_hostname }}
+              Time: {{ ansible_date_time.iso8601 }}
+              Partitions over limit:
+              {% for line in disk_output.stdout_lines %}
+                - {{ line }}
+              {% endfor %}
+          when: disk_output.stdout_lines | length > 0
+          ignore_errors: true
+
+
+# --- check-status: hit the REST API and report rbcapp1 health ---
+- name: Check application status
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: check-status tasks
+      when: action == "check-status"
+      block:
+        - name: Call healthcheck endpoint
+          ansible.builtin.uri:
+            url: "{{ healthcheck_url }}"
+            method: GET
+            return_content: true
+            status_code: 200
+          register: healthcheck_response
+          ignore_errors: true
+
+        - name: Show error if API unreachable
+          ansible.builtin.debug:
+            msg: "ERROR: cannot reach {{ healthcheck_url }} - is the Flask app running?"
+          when: healthcheck_response is failed
+
+        - name: Process response
+          when: healthcheck_response is succeeded
+          block:
+            - name: Parse response
+              ansible.builtin.set_fact:
+                app_status: "{{ (healthcheck_response.content | from_json).application_status }}"
+                services: "{{ (healthcheck_response.content | from_json).services }}"
+
+            - name: Show rbcapp1 status
+              ansible.builtin.debug:
+                msg: "rbcapp1 status: {{ app_status }}"
+
+            - name: List downed services
+              ansible.builtin.debug:
+                msg: "DOWN: {{ item.service_name }} on {{ item.host_name }}"
+              loop: "{{ services }}"
+              when: item.service_status == "DOWN"
+
+            - name: All good
+              ansible.builtin.debug:
+                msg: "All services are UP."
+              when: app_status == "UP"
